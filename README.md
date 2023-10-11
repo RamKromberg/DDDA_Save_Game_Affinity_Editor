@@ -1,5 +1,5 @@
 Dragon's Dogma: Dark Arisen Save Game Affinity Editor
-2023-09-29
+2023-10-04
 nowahNOwah @ https://www.nexusmods.com/dragonsdogma/mods/957
 
 A GUI to modify DDDA save games' NPCs' affinities, the NPC that was ring-bonded and the NPC that was caught.
@@ -31,3 +31,7 @@ Note:
 	2. Was only tested on the GOG version
 	3. (linux) Uses the windows pre-packaged Tkinter library
 	4. Some credits in the source...
+
+ChangeLog:
+	2023-10-04: Sorted the names; Added a basic search to the combobox.
+	2023-09-29: Release.
