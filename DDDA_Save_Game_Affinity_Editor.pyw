@@ -14,6 +14,8 @@ from tkinter import ttk
 from tkinter import filedialog
 from tkinter import messagebox
 from tkinter import StringVar
+import tkinter.font as tkFont
+import math
 
 try:
 	import sv_ttk
@@ -35,16 +37,201 @@ if os.name == 'nt':
 	hWnd = kernel32.GetConsoleWindow()
 	user32.ShowWindow(hWnd, SW_HIDE)
 
+#RamKromberg & FluffyQuack @ https://github.com/RamKromberg/pyDDDAsavetool
+from dataclasses import dataclass
+import struct
+import zlib
+
+@dataclass
+class DDDASaveHeader:
+	"""DDDA save header"""
+	version: int = None
+	unCompressedSize: int = None
+	compressedSize: int = None
+	u1: int = 860693325
+	u2: int = 0
+	u3: int = 860700740
+	hash: int = None #crc32 of compressed save data
+	u4: int = 1079398965
+	littleEndian = True
+	headerLength = 32
+	def __init__(self, rawHeader=None):
+		if rawHeader != None:
+			self.parse(rawHeader)
+	def parse(self, rawHeader):
+		if len(rawHeader) != self.headerLength:
+			raise ValueError("parse requires a buffer of 32 bytes" % rawHeader)
+		version, unCompressedSize, compressedSize, u1, u2, u3, hash, u4 = struct.unpack('< I I I I I I I I', rawHeader)
+		if version != 21:
+			#TODO: incomplete and untested
+			version, unCompressedSize, compressedSize, u1, u2, u3, hash, u4 = struct.unpack('> I I I I I I I I', rawHeader)
+			littleEndian = False
+		if (u1 != self.u1 or u2 != self.u2 or u3 != self.u3 or u4 != self.u4):
+			raise ValueError("Invalid DDDASaveHeader" % rawHeader)
+		else:
+			self.version, self.unCompressedSize, self.compressedSize, self.hash = version, unCompressedSize, compressedSize, hash
+	def serialize(self):
+		if self.littleEndian:
+			stuct = struct.pack('< I I I I I I I I', self.version, self.unCompressedSize, self.compressedSize, self.u1, self.u2, self.u3, self.hash, self.u4)
+		else:
+			stuct = struct.pack('> I I I I I I I I', self.version, self.unCompressedSize, self.compressedSize, self.u1, self.u2, self.u3, self.hash, self.u4)
+		return stuct
+	def __getitem__(self, item):
+		if self.littleEndian:
+			match item:
+				case 0:
+					return self.version
+				case 1:
+					return self.unCompressedSize
+				case 2:
+					return self.compressedSize
+				case 3:
+					return self.u1
+				case 4:
+					return self.u2
+				case 5:
+					return self.u3
+				case 6:
+					return self.hash
+				case 7:
+					return self.u4
+				case int():
+					raise IndexError("index \"%s\" out of range" % item)
+				case str():
+					try:
+						return getattr(self, item)
+					except:
+						raise KeyError ("key \"%s\" out of range" % item)
+				case _:
+					raise TypeError('Unsupported type' % item)
+		else:
+			match item:
+				case 0:
+					return self.u4
+				case 1:
+					return self.hash
+				case 2:
+					return self.u3
+				case 3:
+					return self.u2
+				case 4:
+					return self.u1
+				case 5:
+					return self.compressedSize
+				case 6:
+					return self.unCompressedSize
+				case 7:
+					return self.version
+				case int():
+					raise IndexError("index \"%s\" out of range" % item)
+				case str():
+					try:
+						return getattr(self, item)
+					except:
+						raise KeyError ("key \"%s\" out of range" % item)
+				case _:
+					raise TypeError('Unsupported type' % item)
+	def __str__(self):
+		if self.version == 21:
+			return "Dragon's Dogma: Dark Arisen save header"
+		elif self.version == 5:
+			return "Dragon's Dogma original console save header"
+		else:
+			return str(type(self))
+
+class DDDASave:
+	header = DDDASaveHeader()
+	data = None
+	fileLength = 524288
+	def __init__(self, buffer=None):
+		if buffer != None:
+			peek=buffer.peek(1)[0]
+			match peek:
+				case 21:
+					self.openSav(buffer)
+				case 5:
+					#TODO: untested
+					self.openSav(buffer)
+				case 60:
+					self.openXml(buffer)
+				case _:
+					raise ValueError ("magick byte %s unsupported" % peek)
+	def openSav(self, buffer):
+		self.header.parse(buffer.read(self.header.headerLength))
+		data_compressed = buffer.read(self.fileLength-self.header.headerLength)
+		self.data = zlib.decompress(data_compressed)
+	def openXml(self, buffer):
+		self.data = buffer.read()
+		self.header.version = 21
+	def compress(self, data=None):
+		data = self.data if data==None else data
+		return zlib.compress(data, 3) #h78 h5E = b01111000 = zlib level 4
+	def checksum(self, data_compressed=None):
+		data_compressed = self.compress() if data_compressed==None else data_compressed
+		hash = (zlib.crc32(data_compressed) ^ -1) % (1<<32)
+		return hash
+	def checksize(self, data_compressed=None):
+		data_compressed = self.compress() if data_compressed==None else data_compressed
+		data_compressed_size = len(data_compressed)
+		return data_compressed_size
+	def unpack(self, data=None):
+		#xml output
+		data = self.data if data==None else data
+		return data.decode('utf-8')
+	def __str__(self, data=None):
+		data = self.data if data==None else data
+		return self.unpack(data)
+	def convert(self, data=None):
+		#TODO: endian and pc-to-console-to-pc stuff...
+		data = self.data if data==None else data
+		if data.decode('utf-8')[-9:] == "</class>\n":
+			print("PC save")
+	def pack(self, data=None):
+		#compress the new data
+		data_compressed = self.compress() if data==None else self.compress(data)
+		#update the header
+		self.header.unCompressedSize = len(self.data) if data==None else len(data)
+		self.header.compressedSize = self.checksize(data_compressed)
+		self.header.hash = self.checksum(data_compressed)
+		#put the updated header and compressed data together in a pre-padded bytearray and return it for write out
+		compBuffer = bytearray(b'\0' * self.fileLength)
+		for i, c in enumerate(self.header.serialize()):
+			compBuffer[i] = c
+		for i, c in enumerate(data_compressed):
+			compBuffer[i+32] = c
+		return(compBuffer)
+
 #takes string file path
 #returns lxml etree
-def load_tree(file):
+def load_sav(file):
+	f = open(file,"rb")
+	save_str = DDDASave(f).unpack()
+	save_str = save_str[save_str.find('\n'):] #lxml.etree.fromstring() doens't work with the first line's xml decleration
+	tree = etree.fromstring(save_str)
+	f.close()
+	return tree
+
+import io
+#takes lxml etree, string file path
+def save_sav(tree, file):
+	tree_bytesio = io.BytesIO(etree.tostring(tree, xml_declaration=False, encoding="utf-8", doctype='<?xml version="1.0" encoding="utf-8"?>')+b"\n")
+	tree_bytesio.seek(0)
+	tree_bufferedreader = io.BufferedReader(tree_bytesio)
+	save = DDDASave(tree_bufferedreader)
+	file=open(file,'wb')
+	file.write(save.pack())
+	file.close()
+
+#takes string file path
+#returns lxml etree
+def load_xml(file):
 	f = open(file,"r")
 	tree = etree.parse(f)
 	f.close()
 	return tree
 
 #takes lxml etree, string file path
-def save_tree(tree, file):
+def save_xml(tree, file):
 	file=open(file,'wb')
 	out = etree.tostring(tree, xml_declaration=False, encoding="utf-8", doctype='<?xml version="1.0" encoding="utf-8"?>')+b"\n"
 	file.write(out)
@@ -327,12 +514,12 @@ class AffinitiesTab(ttk.Frame):
 
 		affinitiesframe = ttk.Frame(self, style='Card.TFrame')
 		self.treeview_affinities_scrollbar = ttk.Scrollbar(affinitiesframe, orient ="vertical")
-		self.treeview_affinities = Treeview(affinitiesframe, columns=('c1', 'c2'), editable_columns=('#2'), descending=(True,False), sort_type=(str,int), show='headings', selectmode ='browse')
+		self.treeview_affinities = Treeview(affinitiesframe, columns=('c1', 'c2'), editable_columns=('#2'), descending=(True,False), sort_type=(str,int), show='headings', selectmode ='browse', height=25)
 		self.treeview_affinities_scrollbar.config(command = self.treeview_affinities.yview)
-		self.treeview_affinities.heading('c1', text='Names')
-		self.treeview_affinities.heading('c2', text='Affinities')
-		self.treeview_affinities.column('c1', width=300)
-		self.treeview_affinities.column('c2', width=65)
+		self.treeview_affinities.heading('c1', text='Name')
+		self.treeview_affinities.heading('c2', text='Affinity')
+		self.treeview_affinities.column('c2', minwidth=70)
+		self.treeview_affinities.column('c1', minwidth=320)
 		self.treeview_affinities.config(yscrollcommand=self.treeview_affinities_scrollbar.set)
 		self.treeview_affinities.bind('<<TreeViewRecordChange>>', self.treeview_affinities_callback)
 
@@ -340,29 +527,28 @@ class AffinitiesTab(ttk.Frame):
 		self.combobox_caught_value = StringVar()
 		self.combobox_caught_value.trace_add('write', self.combobox_caught_callback)
 		label_caught = ttk.Label(caughtframe, style='TLabel', text = "Caught:")
-		self.combobox_caught = BasicSearchCombobox(caughtframe, style='TCombobox', state='readonly', textvariable = self.combobox_caught_value, width=40, name="box_caught")
+		self.combobox_caught = BasicSearchCombobox(caughtframe, style='TCombobox', state='readonly', textvariable = self.combobox_caught_value, name="box_caught")
 
 		ringframe = ttk.Frame(self, style='Card.TFrame')
 		self.combobox_ring_value = StringVar()
 		self.combobox_ring_value.trace_add('write', self.combobox_ring_callback)
 		label_ring = ttk.Label(ringframe, style='TLabel', text = "Ring:")
-		self.combobox_ring = BasicSearchCombobox(ringframe, style='TCombobox', state='readonly', textvariable = self.combobox_ring_value, width=42,name="box_ring")
+		self.combobox_ring = BasicSearchCombobox(ringframe, style='TCombobox', state='readonly', textvariable = self.combobox_ring_value, name="box_ring")
 
 		#layout
 		self.rowconfigure(0, weight=1)
 		self.columnconfigure(0, weight=1)
-
-		affinitiesframe.grid(row = 0, columnspan=2, padx=12, pady=1)
-		self.treeview_affinities.grid(row=0, column=0, sticky='nsw')
-		self.treeview_affinities_scrollbar.grid(row=0, column=1, sticky='nse')
-
-		caughtframe.grid(row = 1, columnspan = 2, padx=2, pady=2)
-		label_caught.grid(row = 0, column=0, padx=5, pady=5)
-		self.combobox_caught.grid(row = 0, column=1, padx=5, pady=5)
-
-		ringframe.grid(row = 2, columnspan = 2, padx=2, pady=2)
-		label_ring.grid(row = 0, column=0, padx=5, pady=5)
-		self.combobox_ring.grid(row = 0, column=1, padx=5, pady=5)
+		affinitiesframe.pack(fill="both",pady=2)
+		self.treeview_affinities.pack(side="left",fill="both",padx=1)
+		self.treeview_affinities_scrollbar.pack(side="right",fill="y",padx=1)
+		caughtframe.pack(side="bottom",fill="both",pady=2,padx=2)
+		label_caught.pack(side="left")
+		self.combobox_caught.pack(side="right",fill="both")
+		self.combobox_caught.configure(width=35)
+		ringframe.pack(side="bottom",fill="both",pady=2,padx=2)
+		label_ring.pack(side="left")
+		self.combobox_ring.pack(side="right",fill="both")
+		self.combobox_ring.configure(width=35)
 
 	def treeview_affinities_callback(self, *event):
 		iid=int(self.treeview_affinities.focus())
@@ -427,6 +613,7 @@ class App(tk.Tk):
 
 		title = "DDDA Save Affinity Editor"
 		self.title(title)
+		self.resizable(height = False, width = False)
 		frame = ttk.Frame(self, style='Card.TFrame')
 		tabCtrl = ttk.Notebook(frame, style='TNotebook')
 		affinitiesTab = ttk.Frame(tabCtrl, style='TNotebook.Tab')
@@ -441,16 +628,27 @@ class App(tk.Tk):
 		#layout
 		self.rowconfigure(0, weight=1)
 		self.columnconfigure(0, weight=1)
-		frame.grid(row = 0, column = 0)
-		tabCtrl.grid(row = 0, column = 0)
-		affinitiesframe.grid(row = 0, columnspan=2, padx=12, pady=1)
+		frame.pack(padx=1, pady=1)
+		tabCtrl.pack(padx=1, pady=1)
+		affinitiesframe.pack(padx=1, pady=1)
 
-		saveloadframe.grid(row = 1, columnspan = 2, padx=2, pady=2)
-		load_button.grid(row = 0, column = 0, padx=5, pady=5, sticky='e')
-		save_button.grid(row = 0, column = 1, padx=5, pady=5, sticky='w')
+		saveloadframe.pack(padx=2, pady=2)
+		load_button.pack(side="left", padx=2, pady=2)
+		save_button.pack(side="left", padx=2, pady=2)
 
 		if sv_ttk:
 			sv_ttk.set_theme("dark")
+			font_nameprefix="SunValley"
+			font_names = ("Caption", "Body", "BodyStrong", "BodyLarge", "Subtitle", "Title", "TitleLarge", "Display")
+			font_scale_add = 1.2
+		else:
+			font_nameprefix="Tk"
+			font_names = ("Default", "Text", "Fixed", "Menu", "Heading", "Caption", "SmallCaption", "Icon", "Tooltip")
+			font_scale_add = 1.1
+		for font in font_names:
+			font = tkFont.nametofont(f"{font_nameprefix}{font}Font")
+			size = font.cget("size")
+			font.configure(size=math.ceil(int(size)*font_scale_add))
 		ttk.Style().configure("Accent.TButton", padding=2)
 		ttk.Style().configure("TCombobox", padding=2)
 		ttk.Style().configure("TNotebook", padding=1)
@@ -460,17 +658,24 @@ class App(tk.Tk):
 	def load_file(self):
 		filetypes = (
 			('DDDA unpacked save', '*.sav.xml'),
+			('DDDA save', '*.sav'),
 			('All types', '*.*')
 		)
 		filename = filedialog.askopenfilename(
-			title='Open a save file xml',
+			title='Open a save file xml/sav',
 			initialdir='./',
 			filetypes=filetypes)
 		if filename!="":
-			try:
-				self.tree = DDDASaveTree(load_tree(filename))
-			except:
-				messagebox.showerror(title="Pawn 9000", message="I'm sorry, Ser " + os.getlogin() + ", I'm afraid I can't do that.")
+			if filename[-3:]=="sav":
+				try:
+					self.tree = DDDASaveTree(load_sav(filename))
+				except:
+					messagebox.showerror(title="Pawn 9000", message="I'm sorry, Ser " + os.getlogin() + ", I'm afraid I can't do that.")
+			else:
+				try:
+					self.tree = DDDASaveTree(load_xml(filename))
+				except:
+					messagebox.showerror(title="Pawn 9000", message="I'm sorry, Ser " + os.getlogin() + ", I'm afraid I can't do that.")
 		self.event_generate("<<TreeLoaded>>");
 
 	def save_file(self):
@@ -479,6 +684,7 @@ class App(tk.Tk):
 			return
 		filetypes = (
 			('DDDA unpacked save', '*.sav.xml'),
+			('DDDA save', '*.sav'),
 			('All types', '*.*')
 		)
 		filename = filedialog.asksaveasfilename(
@@ -487,7 +693,10 @@ class App(tk.Tk):
 			filetypes=filetypes,
 			defaultextension=".xml")
 		if filename:
-			save_tree(self.tree.tree, filename)
+			if filename[-3:]=="sav":
+				save_sav(self.tree.tree, filename)
+			else:
+				save_xml(self.tree.tree, filename)
 
 def main():
 	app = App()
