@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 # Dragon's Dogma: Dark Arisen Save Game Affinity Editor
-# 2023-10-10 WIP
+# 2023-10-11
 # nowahNOwah @ https://www.nexusmods.com/users/183050388
 #
 # depends on "pip install lxml sv_ttk"
@@ -34,6 +34,21 @@ if os.name == 'nt':
 	SW_HIDE = 0
 	hWnd = kernel32.GetConsoleWindow()
 	user32.ShowWindow(hWnd, SW_HIDE)
+
+#takes string file path
+#returns lxml etree
+def load_tree(file):
+	f = open(file,"r")
+	tree = etree.parse(f)
+	f.close()
+	return tree
+
+#takes lxml etree, string file path
+def save_tree(tree, file):
+	file=open(file,'wb')
+	out = etree.tostring(tree, xml_declaration=False, encoding="utf-8", doctype='<?xml version="1.0" encoding="utf-8"?>')+b"\n"
+	file.write(out)
+	file.close()
 
 #wraps up all the node operations while keeping the various lists in-sync
 class DDDASaveTree:
@@ -147,7 +162,7 @@ class DDDASaveTree:
 #just jumps to the first letter
 #TODO: full search...
 class BasicSearchCombobox(ttk.Combobox):
-	def __init__(self, master=None, **kwargs):
+	def __init__(self, master, **kwargs):
 		ttk.Combobox.__init__(self, master, **kwargs)
 		self['state']='readonly'
 		self.bind('<KeyPress>', self.onBox)
@@ -187,61 +202,147 @@ class BasicSearchCombobox(ttk.Combobox):
 						break
 		self.select_range(0, tk.END)
 
-#takes string file path
-#returns lxml etree
-def load_tree(file):
-	f = open(file,"r")
-	tree = etree.parse(f)
-	f.close()
-	return tree
+#DONE: editable entries, column sort, basic by-first-letter search
+#TODO: full search...
+class Treeview(ttk.Treeview):
+	# customized https://stackoverflow.com/questions/18562123/how-to-make-ttk-treeviews-rows-editable
+	def __init__(self, master, editable_columns=(), descending=(), sort_type=(), *args, **kwargs):
+		self.editable_columns=editable_columns
+		self.descending=descending
+		self.sort_type=sort_type
+		super().__init__(master, *args, **kwargs)
+		self.bind("<Double-1>", lambda event: self.onDoubleClick(event))
+		self.bind("<ButtonRelease-1>", lambda event: self.onSingleClickRelease(event))
+		self.bind("<KeyPress>", lambda event: self.onKeyPress(event))
+		self.bind("<<TreeviewSelect>>", lambda event: self.onTreeviewSelect(event))
+		self.event_add('<<TreeViewRecordChange>>', 'None')
 
-#takes lxml etree, string file path
-def save_tree(tree, file):
-	file=open(file,'wb')
-	out = etree.tostring(tree, xml_declaration=False, encoding="utf-8", doctype='<?xml version="1.0" encoding="utf-8"?>')+b"\n"
-	file.write(out)
-	file.close()
+	#destroy existing entries on selection changes
+	def onTreeviewSelect(self, event):
+		try:
+			self.entryPopup.destroy()
+		except AttributeError:
+			pass
 
-class App(tk.Tk):
-	tree = None
-	def __init__(self):
-		super().__init__()
+	#entry popup
+	def onDoubleClick(self, event):
+		row = self.identify_row(event.y)
+		col = self.identify_column(event.x)
 
-		title = "DDDA Save Affinity Editor"
-		self.title(title)
-		frame = ttk.Frame(self, style='Card.TFrame')
-		tabCtrl = ttk.Notebook(frame, style='TNotebook')
-		summaryTab = ttk.Frame(tabCtrl, style='TNotebook.Tab')
-		editTab = ttk.Frame(tabCtrl, style='TNotebook.Tab')
-		tabCtrl.add(summaryTab, text ='Summery')
-		tabCtrl.add(editTab, text ='Edit')
+		if not row:
+			return
 
-		buttonsframe = ttk.Frame(frame, style='Card.TFrame')
-		load_button=ttk.Button(buttonsframe, style='Accent.TButton', text='Load...', width=7, command=self.load_file)
-		save_button=ttk.Button(buttonsframe, style='Accent.TButton', text='Save...', width=7, command=self.save_file)
+		if col not in self.editable_columns:
+			return
 
-		summaryframe = ttk.Frame(summaryTab, style='Card.TFrame')
-		self.treeview = ttk.Treeview(summaryframe, columns=('c1', 'c2'), show='headings', selectmode ='browse')
-		self.treeview.heading('c1', text='Names', command=lambda c='c1': self.treeview_sort(self.treeview, c, False, False))
-		self.treeview.heading('c2', text='Affinities', command=lambda c='c2': self.treeview_sort(self.treeview, c, False, True))
-		self.treeview_scrollbar = ttk.Scrollbar(summaryframe, orient ="vertical", command = self.treeview.yview)
-		self.treeview.config(yscrollcommand=self.treeview_scrollbar.set)
+		x,y,width,height = self.bbox(row, col)
 
-		affinitiesframe = ttk.LabelFrame(editTab, text="Affinities:", style='TLabelframe')
-		self.combobox_affinties_value = StringVar()
-		self.combobox_affinties_value.trace_add('write', self.combobox_affinties_callback)
-		self.combo_box_affinties = BasicSearchCombobox(affinitiesframe, style='TCombobox', textvariable=self.combobox_affinties_value, state='readonly', width=40, name="box_affinities")
-		self.entrybox_affinties_value = StringVar()
-		self.entrybox_affinties_value.trace_add('write', self.entrybox_affinties_callback)
-		self.entry_box_affinties = ttk.Entry(affinitiesframe, style='TEntry', state='readonly', textvariable = self.entrybox_affinties_value, width=5)
+		pady = height // 2
 
-		caughtframe = ttk.Frame(editTab, style='Card.TFrame')
+		text = self.item(row, 'values')[int(col[1:])-1]
+		self.entryPopup = EntryPopup(self, row, int(col[1:])-1, text)
+		self.entryPopup.place(x=x, y=y+pady, width=width, height=height+2, anchor='w')
+
+	#search
+	#just jumps to the first letter
+	#TODO: full search...
+	def onKeyPress(self, event):
+		vals = []
+		for iid in self.get_children():
+			vals.append(self.item(iid, "values")[0])
+		key = event.keysym.capitalize()
+		for val in vals:
+			if key == val[0].capitalize():
+				pos = vals.index(val)
+				self.yview(pos)
+				break
+
+	#sort on column click
+	def onSingleClickRelease(self, event):
+		row = self.identify_row(event.y)
+		col = self.identify_column(event.x)
+		if not row:
+			if col and self.identify("region", event.x, event.y) == "heading":
+				self.sort(int(col[1:])-1)
+			return
+	def sort(self, col):
+		if len(self.descending) >= col+1:
+			descend=self.descending[col]
+		else:
+			descend=False
+		if len(self.sort_type) >= col+1:
+			sort_type=self.sort_type[col]
+		else:
+			sort_type=str
+
+		data = [(self.set(item, col), item) for item in self.get_children('')]
+		if sort_type==int:
+			data.sort(reverse=descend, key=lambda x: int(x[0]))
+		else:
+			data.sort(reverse=descend)
+
+		for index, (val, item) in enumerate(data):
+			self.move(item, '', index)
+		self.descending=[not x for x in self.descending]
+
+class EntryPopup(ttk.Entry):
+	def __init__(self, master, iid, column, text, **kw):
+		ttk.Style().configure('pad.TEntry', padding='1 1 1 1')
+		super().__init__(master, style='pad.TEntry', **kw)
+		self.tv = master
+		self.iid = iid
+		self.column = column
+
+		self.insert(0, text)
+		self['exportselection'] = False
+
+		self.focus_force()
+		self.select_all()
+		self.bind("<Return>", self.on_return)
+		self.bind("<Control-a>", self.select_all)
+		self.bind("<Escape>", lambda *ignore: self.destroy())
+
+	def on_return(self, event):
+		rowid = self.tv.focus()
+		vals = self.tv.item(rowid, 'values')
+		vals = list(vals)
+		vals[self.column] = self.get()
+		self.tv.item(rowid, values=vals)
+		self.tv.event_generate("<<TreeViewRecordChange>>");
+		self.destroy()
+
+	def select_all(self, *ignore):
+		self.selection_range(0, 'end')
+		return 'break'
+
+	def destroy(self):
+		ttk.Entry.destroy(self)
+
+class AffinitiesTab(ttk.Frame):
+	def __init__(self, container):
+		super().__init__(container)
+
+		self.tree=None
+		self.master.master.master.master.bind('<<TreeLoaded>>', self.load_tree)
+
+		affinitiesframe = ttk.Frame(self, style='Card.TFrame')
+		self.treeview_affinities_scrollbar = ttk.Scrollbar(affinitiesframe, orient ="vertical")
+		self.treeview_affinities = Treeview(affinitiesframe, columns=('c1', 'c2'), editable_columns=('#2'), descending=(True,False), sort_type=(str,int), show='headings', selectmode ='browse')
+		self.treeview_affinities_scrollbar.config(command = self.treeview_affinities.yview)
+		self.treeview_affinities.heading('c1', text='Names')
+		self.treeview_affinities.heading('c2', text='Affinities')
+		self.treeview_affinities.column('c1', width=300)
+		self.treeview_affinities.column('c2', width=65)
+		self.treeview_affinities.config(yscrollcommand=self.treeview_affinities_scrollbar.set)
+		self.treeview_affinities.bind('<<TreeViewRecordChange>>', self.treeview_affinities_callback)
+
+		caughtframe = ttk.Frame(self, style='Card.TFrame')
 		self.combobox_caught_value = StringVar()
 		self.combobox_caught_value.trace_add('write', self.combobox_caught_callback)
 		label_caught = ttk.Label(caughtframe, style='TLabel', text = "Caught:")
 		self.combobox_caught = BasicSearchCombobox(caughtframe, style='TCombobox', state='readonly', textvariable = self.combobox_caught_value, width=40, name="box_caught")
 
-		ringframe = ttk.Frame(editTab, style='Card.TFrame')
+		ringframe = ttk.Frame(self, style='Card.TFrame')
 		self.combobox_ring_value = StringVar()
 		self.combobox_ring_value.trace_add('write', self.combobox_ring_callback)
 		label_ring = ttk.Label(ringframe, style='TLabel', text = "Ring:")
@@ -250,73 +351,32 @@ class App(tk.Tk):
 		#layout
 		self.rowconfigure(0, weight=1)
 		self.columnconfigure(0, weight=1)
-		frame.grid(row = 0, column = 0)
-		tabCtrl.grid(row = 0, column = 0)
-		summaryframe.grid(row = 0, column=0, padx=12, pady=1)
-		self.treeview.grid(row=0, column=0, sticky='nsw')
-		self.treeview_scrollbar.grid(row=0, column=1, sticky='nse')
-		affinitiesframe.grid(row = 0, columnspan = 2, padx=8, pady=2)
-		self.combo_box_affinties.grid(row = 0, column=0, padx=5, pady=5)
-		self.entry_box_affinties.grid(row = 0, column=1, padx=5, pady=5)
+
+		affinitiesframe.grid(row = 0, columnspan=2, padx=12, pady=1)
+		self.treeview_affinities.grid(row=0, column=0, sticky='nsw')
+		self.treeview_affinities_scrollbar.grid(row=0, column=1, sticky='nse')
+
 		caughtframe.grid(row = 1, columnspan = 2, padx=2, pady=2)
 		label_caught.grid(row = 0, column=0, padx=5, pady=5)
 		self.combobox_caught.grid(row = 0, column=1, padx=5, pady=5)
+
 		ringframe.grid(row = 2, columnspan = 2, padx=2, pady=2)
 		label_ring.grid(row = 0, column=0, padx=5, pady=5)
 		self.combobox_ring.grid(row = 0, column=1, padx=5, pady=5)
-		buttonsframe.grid(row = 1, columnspan = 2, padx=2, pady=2)
-		load_button.grid(row = 0, column = 0, padx=5, pady=5)
-		save_button.grid(row = 0, column = 1, padx=5, pady=5)
-		if sv_ttk:
-			sv_ttk.set_theme("dark")
-			ttk.Style().configure('TLabelframe.Label', foreground='white', padding=1)
-		else:
-			ttk.Style().configure('TLabelframe.Label', padding=1)
-		ttk.Style().configure("Accent.TButton", padding=2)
-		ttk.Style().configure("TEntry", padding=2)
-		ttk.Style().configure("TCombobox", padding=2)
-		ttk.Style().configure("TFrame", padding=1)
-		ttk.Style().configure("TNotebook", padding=1)
-		ttk.Style().configure("TNotebook.Tab", padding=1)
-		ttk.Style().configure("TTreeview", padding=1)
-		ttk.Style().configure("TScrollbar", padding=1)
-		self.mainloop()
 
-	def treeview_sort(self, treeview, col, descending, asInt):
-		data = [(treeview.set(item, col), item) for item in treeview.get_children('')]
-		if asInt:
-			data.sort(reverse=descending, key=lambda x: int(x[0]))
-		else:
-			data.sort(reverse=descending)
-		for index, (val, item) in enumerate(data):
-			treeview.move(item, '', index)
-		treeview.heading(col, command=lambda: self.treeview_sort(treeview, col, not descending, asInt))
-
-	def entrybox_affinties_callback(self, var, index, mode):
-		self.entry_box_affinties['state'] = 'normal'
-		#sanitizing input
-		entry = self.entrybox_affinties_value.get()
-		entry = ''.join(c for c in entry if c.isdigit())
+	def treeview_affinities_callback(self, *event):
+		iid=int(self.treeview_affinities.focus())
+		entry=self.treeview_affinities.item(iid, "values")[1]
 		if entry == "":
 			entry = 0
-			self.entry_box_affinties.insert(0, '0')
-			self.entry_box_affinties.select_range(0, tk.END)
-			self.entry_box_affinties.icursor(0)
-		elif int(entry) > 1000:
-			entry = 1000
-			self.entry_box_affinties.select_range(0, tk.END)
-		self.entrybox_affinties_value.set(entry)
-		#putting the number back into the list
-		cur = self.combo_box_affinties.current()
-		self.tree.set_affinity(self.tree.npcs_ids[cur], str(entry))
-		#treeview
-		self.treeview.delete(*self.treeview.get_children())
-		for idx, npc in enumerate(self.tree.npcs):
-			self.treeview.insert('', tk.END, values=(npc,self.tree.npcs_affinities[idx]))
-
-	def combobox_affinties_callback(self, var, index, mode):
-		cur = self.combo_box_affinties.current()
-		self.entrybox_affinties_value.set(self.tree.npcs_affinities[cur])
+		elif entry.isnumeric():
+			entry = int(entry)
+			if entry > 1000:
+				entry = 1000
+		else:
+			entry = self.tree.npcs_affinities[int(iid)]
+		self.treeview_affinities.set(iid, column="#2", value=entry)
+		self.tree.set_affinity(self.tree.npcs_ids[iid], str(entry))
 
 	def combobox_ring_callback(self, var, index, mode):
 		cur = self.combobox_ring.current()
@@ -342,6 +402,61 @@ class App(tk.Tk):
 				caught_value = self.tree.npcs_ids[cur-1]
 		self.tree.caught_id = caught_value
 
+	def load_tree(self, *event):
+		self.tree=self.master.master.master.master.tree
+		self.treeview_affinities.delete(*self.treeview_affinities.get_children())
+		for idx, npc in enumerate(self.tree.npcs):
+			self.treeview_affinities.insert('', tk.END, iid=str(idx), values=(npc, self.tree.npcs_affinities[idx]))
+
+		if self.tree.caught[0] == "№":
+			self.combobox_caught['values'] = ['-None-']+list(self.tree.npcs)+[self.tree.caught]
+		else:
+			self.combobox_caught['values'] = ['-None-']+list(self.tree.npcs)
+		self.combobox_caught.set(self.tree.caught)
+
+		if self.tree.ring[0] == "№":
+			self.combobox_ring['values'] = ['-None-']+list(self.tree.npcs)+[self.tree.ring]
+		else:
+			self.combobox_ring['values'] = ['-None-']+list(self.tree.npcs)
+		self.combobox_ring.set(self.tree.ring)
+
+class App(tk.Tk):
+	tree = None
+	def __init__(self):
+		super().__init__()
+
+		title = "DDDA Save Affinity Editor"
+		self.title(title)
+		frame = ttk.Frame(self, style='Card.TFrame')
+		tabCtrl = ttk.Notebook(frame, style='TNotebook')
+		affinitiesTab = ttk.Frame(tabCtrl, style='TNotebook.Tab')
+		tabCtrl.add(affinitiesTab, text ='Affinities')
+
+		affinitiesframe = AffinitiesTab(affinitiesTab)
+
+		saveloadframe = ttk.Frame(frame, style='Card.TFrame')
+		load_button=ttk.Button(saveloadframe, style='Accent.TButton', text='Load...', width=7, command=self.load_file)
+		save_button=ttk.Button(saveloadframe, style='Accent.TButton', text='Save...', width=7, command=self.save_file)
+
+		#layout
+		self.rowconfigure(0, weight=1)
+		self.columnconfigure(0, weight=1)
+		frame.grid(row = 0, column = 0)
+		tabCtrl.grid(row = 0, column = 0)
+		affinitiesframe.grid(row = 0, columnspan=2, padx=12, pady=1)
+
+		saveloadframe.grid(row = 1, columnspan = 2, padx=2, pady=2)
+		load_button.grid(row = 0, column = 0, padx=5, pady=5, sticky='e')
+		save_button.grid(row = 0, column = 1, padx=5, pady=5, sticky='w')
+
+		if sv_ttk:
+			sv_ttk.set_theme("dark")
+		ttk.Style().configure("Accent.TButton", padding=2)
+		ttk.Style().configure("TCombobox", padding=2)
+		ttk.Style().configure("TNotebook", padding=1)
+		ttk.Style().configure("TNotebook.Tab", padding=1, width=8)
+		self.mainloop()
+
 	def load_file(self):
 		filetypes = (
 			('DDDA unpacked save', '*.sav.xml'),
@@ -356,21 +471,7 @@ class App(tk.Tk):
 				self.tree = DDDASaveTree(load_tree(filename))
 			except:
 				messagebox.showerror(title="Pawn 9000", message="I'm sorry, Ser " + os.getlogin() + ", I'm afraid I can't do that.")
-			else:
-				self.combo_box_affinties['values'] = self.tree.npcs
-				self.combo_box_affinties.current(0)
-
-				if self.tree.caught[0] == "№":
-					self.combobox_caught['values'] = ['-None-']+list(self.tree.npcs)+[self.tree.caught]
-				else:
-					self.combobox_caught['values'] = ['-None-']+list(self.tree.npcs)
-				self.combobox_caught.set(self.tree.caught)
-
-				if self.tree.ring[0] == "№":
-					self.combobox_ring['values'] = ['-None-']+list(self.tree.npcs)+[self.tree.ring]
-				else:
-					self.combobox_ring['values'] = ['-None-']+list(self.tree.npcs)
-				self.combobox_ring.set(self.tree.ring)
+		self.event_generate("<<TreeLoaded>>");
 
 	def save_file(self):
 		if self.tree == None:
